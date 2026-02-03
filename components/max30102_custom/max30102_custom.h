@@ -1,3 +1,4 @@
+// components/max30102_custom/max30102_custom.h
 #pragma once
 
 #include "esphome/core/component.h"
@@ -35,7 +36,6 @@ static const uint8_t REG_TEMP_FRAC      = 0x20;
 static const uint8_t REG_TEMP_CONFIG    = 0x21;
 static const uint8_t REG_PART_ID        = 0xFF;  // očekivano 0x15
 
-// Glavna klasa drivera — usklađena sa sensor.py
 class MAX30102CustomSensor : public sensor::Sensor,
                              public PollingComponent,
                              public i2c::I2CDevice {
@@ -57,7 +57,7 @@ class MAX30102CustomSensor : public sensor::Sensor,
   void set_min_bpm(int v) { min_bpm_ = v; }
   void set_max_bpm(int v) { max_bpm_ = v; }
 
-  void set_hr_median_window(int v)   { hr_median_window_   = v; }    // rezervirano (koristimo IIR)
+  void set_hr_median_window(int v)   { hr_median_window_   = v; }    // rezervirano
   void set_spo2_median_window(int v) { spo2_median_window_ = v; }    // koristimo 5 + IIR
 
   void set_finger_ir_threshold(float v) { finger_thr_  = v; }
@@ -165,4 +165,4 @@ class MAX30102CustomSensor : public sensor::Sensor,
 };
 
 }  // namespace max30102_custom
-}  // namespace esphome// placeholder header
+}  // namespace esphome
