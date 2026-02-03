@@ -1,13 +1,21 @@
+# components/max30102_custom/sensor.py
 import esphome.codegen as cg
 import esphome.config_validation as cv
-from esphome.components import sensor, binary_sensor
+from esphome.components import sensor, binary_sensor, i2c
 from esphome import core
 
-DEPENDENCIES = []
+DEPENDENCIES = ["i2c"]
 AUTO_LOAD = ["sensor", "binary_sensor"]
 
 max30102_ns = cg.esphome_ns.namespace("max30102_custom")
-MAX30102CustomSensor = max30102_ns.class_("MAX30102CustomSensor", sensor.Sensor)
+
+# MAX30102CustomSensor : Sensor + PollingComponent + I2CDevice
+MAX30102CustomSensor = max30102_ns.class_(
+    "MAX30102CustomSensor",
+    cg.PollingComponent,
+    i2c.I2CDevice,
+    sensor.Sensor
+)
 
 CONFIG_SCHEMA = (
     sensor.sensor_schema(MAX30102CustomSensor)
@@ -15,53 +23,60 @@ CONFIG_SCHEMA = (
         {
             cv.Optional("address", default=0x57): cv.i2c_address,
             cv.Optional("update_interval", default="20ms"): cv.update_interval,
+
             cv.Optional("led_red_ma", default=7.6): cv.float_,
-            cv.Optional("led_ir_ma", default=7.6): cv.float_,
-            cv.Optional("sample_rate_hz", default=100): cv.int_,
-            cv.Optional("pulse_width_us", default=411): cv.int_,
-            cv.Optional("adc_range_na", default=16384): cv.int_,
+            cv.Optional("led_ir_ma",  default=7.6): cv.float_,
+
+            cv.Optional("sample_rate_hz",  default=100):  cv.int_,   # 50/100/200/400
+            cv.Optional("sample_average",  default=4):    cv.int_,   # 1/2/4/8/16
+            cv.Optional("pulse_width_us",  default=411):  cv.int_,   # 69/118/215/411
+            cv.Optional("adc_range_na",    default=16384): cv.int_,  # 2048/4096/8192/16384
+
             cv.Optional("baseline_alpha", default=0.01): cv.float_,
-            cv.Optional("rms_beta", default=0.02): cv.float_,
-            cv.Optional("min_bpm", default=35): cv.int_,
+            cv.Optional("rms_beta",       default=0.02): cv.float_,
+
+            cv.Optional("min_bpm", default=35):  cv.int_,
             cv.Optional("max_bpm", default=220): cv.int_,
 
-            # dodatni parametri za tvoju logiku
-            cv.Optional("hr_median_window", default=5): cv.int_,
+            cv.Optional("hr_median_window",   default=5): cv.int_,
             cv.Optional("spo2_median_window", default=7): cv.int_,
-            cv.Optional("finger_ir_threshold", default=300.0): cv.float_,
-            cv.Optional("finger_hysteresis", default=0.8): cv.float_,
-            cv.Optional("perf_min", default=0.002): cv.float_,
 
-            # pod-senzori (IR, RED, HR, SpO2)
-            cv.Optional("ir"): sensor.sensor_schema(),
-            cv.Optional("red"): sensor.sensor_schema(),
-            cv.Optional("heart_rate"): sensor.sensor_schema(),
-            cv.Optional("spo2"): sensor.sensor_schema(),
+            cv.Optional("finger_ir_threshold", default=300.0): cv.float_,
+            cv.Optional("finger_hysteresis",   default=0.8):   cv.float_,
+            cv.Optional("perf_min",            default=0.002):  cv.float_,
+
+            # pod-senzori (opcionalno)
+            cv.Optional("ir"):        sensor.sensor_schema(),
+            cv.Optional("red"):       sensor.sensor_schema(),
+            cv.Optional("heart_rate"):sensor.sensor_schema(),
+            cv.Optional("spo2"):      sensor.sensor_schema(),
 
             # binary_sensor – prisutnost prsta
-            cv.Optional("finger"): binary_sensor.binary_sensor_schema(),
+            cv.Optional("finger"):    binary_sensor.binary_sensor_schema(),
         }
     )
+    .extend(i2c.i2c_device_schema(0x57))
     .extend(cv.polling_component_schema("20ms"))
 )
 
 async def to_code(config):
     var = cg.new_Pvariable(config["id"])
     await sensor.register_sensor(var, config)
+    await cg.register_component(var, config)
+    await i2c.register_i2c_device(var, config)
 
     # osnovni parametri
-    cg.add(var.set_address(config["address"]))
     cg.add(var.set_led_red_ma(config["led_red_ma"]))
     cg.add(var.set_led_ir_ma(config["led_ir_ma"]))
     cg.add(var.set_sample_rate(config["sample_rate_hz"]))
+    if "sample_average" in config:
+        cg.add(var.set_sample_average(config["sample_average"]))
     cg.add(var.set_pulse_width(config["pulse_width_us"]))
     cg.add(var.set_adc_range(config["adc_range_na"]))
     cg.add(var.set_baseline_alpha(config["baseline_alpha"]))
     cg.add(var.set_rms_beta(config["rms_beta"]))
     cg.add(var.set_min_bpm(config["min_bpm"]))
     cg.add(var.set_max_bpm(config["max_bpm"]))
-
-    # dodatni parametri
     cg.add(var.set_hr_median_window(config["hr_median_window"]))
     cg.add(var.set_spo2_median_window(config["spo2_median_window"]))
     cg.add(var.set_finger_ir_threshold(config["finger_ir_threshold"]))
@@ -85,7 +100,6 @@ async def to_code(config):
         sens = await sensor.new_sensor(config["spo2"])
         cg.add(var.set_spo2_sensor(sens))
 
-    # binary sensor finger detection
     if "finger" in config:
         bs = await binary_sensor.new_binary_sensor(config["finger"])
         cg.add(var.set_finger_sensor(bs))
