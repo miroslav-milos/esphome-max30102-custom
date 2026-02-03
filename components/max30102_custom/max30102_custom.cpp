@@ -1,3 +1,4 @@
+// components/max30102_custom/max30102_custom.cpp
 #include "max30102_custom.h"
 #include "esphome/core/log.h"
 
@@ -49,24 +50,23 @@ float MAX30102CustomSensor::iir_spo2_(float x) {
 }
 
 // ---------------- I2C helperi ----------------
-
 bool MAX30102CustomSensor::write_reg_(uint8_t reg, uint8_t val) {
   uint8_t data[2] = { reg, val };
-  auto err = this->write(data, 2);   // novi API
+  auto err = this->write(data, 2);
   return err == i2c::ERROR_OK;
 }
 bool MAX30102CustomSensor::read_reg_(uint8_t reg, uint8_t *val) {
-  auto err = this->write_read(&reg, 1, val, 1);  // novi API
+  auto err = this->write_read(&reg, 1, val, 1);
   return err == i2c::ERROR_OK;
 }
 bool MAX30102CustomSensor::burst_read_(uint8_t reg, uint8_t *data, size_t len) {
-  auto err = this->write_read(&reg, 1, data, len);  // novi API
+  auto err = this->write_read(&reg, 1, data, len);
   return err == i2c::ERROR_OK;
 }
 
-// ---------------- Konfiguracija MAX30102 ----------------
+// ---- mapiranja (datasheet kodovi) ----
 static inline uint8_t map_sample_rate_code(uint16_t hz) {
-  // 50/100/200/400 Hz -> 0/1/2/3 (MAX30102 datasheet)
+  // 50/100/200/400 Hz -> 0/1/2/3 (MAX30102)
   if (hz >= 400) return 3;
   if (hz >= 200) return 2;
   if (hz >= 100) return 1;
@@ -112,7 +112,7 @@ void MAX30102CustomSensor::configure_sensor_() {
 
   // FIFO config: sample avg + rollover + almost_full
   uint8_t avg_code = map_sample_avg_code(sample_average_);
-  uint8_t fifo = static_cast<uint8_t>((avg_code << 5) | (1 << 4) | 0x0F); // rollover=1, almost_full=15
+  uint8_t fifo = static_cast<uint8_t>((avg_code << 5) | (1 << 4) | 0x0F); // rollover=1, A_FULL=15
   (void) write_reg_(REG_FIFO_CONFIG, fifo);
 
   // FIFO pointers clear
@@ -125,7 +125,7 @@ void MAX30102CustomSensor::configure_sensor_() {
   pulse_width_code_ = map_pulse_width_code(pulse_width_us_);
   adc_range_code_   = map_adc_range_code(adc_range_na_);
 
-  // SpO2 config
+  // SpO2 config: [ADC_RGE|SR|PW]
   uint8_t spo2 = static_cast<uint8_t>((adc_range_code_ << 5) | (sample_rate_code_ << 2) | (pulse_width_code_));
   (void) write_reg_(REG_SPO2_CONFIG, spo2);
 
@@ -135,23 +135,22 @@ void MAX30102CustomSensor::configure_sensor_() {
   (void) write_reg_(REG_LED1_PA, red_pa);
   (void) write_reg_(REG_LED2_PA, ir_pa);
 
-  // SpO2 mode
+  // SpO2 mode (0b011)
   (void) write_reg_(REG_MODE_CONFIG, 0x03);
 
-  // Interrupts (opcionalno: PPG_RDY)
-  (void) write_reg_(REG_INTR_ENABLE_1, 0x20);
+  // Interrupts: A_FULL + PPG_RDY (za eventualni INT); radimo polling u update()
+  (void) write_reg_(REG_INTR_ENABLE_1, 0xC0);
   (void) write_reg_(REG_INTR_ENABLE_2, 0x00);
 
-  ESP_LOGI(TAG, "Configured (rate=%uHz, avg=%u, pw=%uus, range=%uuna, LED R=%.1fmA IR=%.1fmA)",
+  ESP_LOGI(TAG, "Configured (rate=%uHz, avg=%u, pw=%uus, range=%u nA, LED R=%.1fmA IR=%.1fmA)",
            sample_rate_hz_, sample_average_, pulse_width_us_, adc_range_na_, led_red_ma_, led_ir_ma_);
 }
 
-// ---------------- ESPHome lifecycle ----------------
 void MAX30102CustomSensor::setup() {
-  // Ako nema I2C bus registriran u sensor.py, čitanje će failati.
+  // Pročitaj PART ID (0x15 očekivan)
   uint8_t part = 0;
   if (!read_reg_(REG_PART_ID, &part)) {
-    ESP_LOGW(TAG, "I2C read failed (PART ID). Provjeri i2c.register_i2c_device u sensor.py");
+    ESP_LOGW(TAG, "I2C read failed (PART ID). Provjeri i2c wiring/bus.");
   } else {
     ESP_LOGI(TAG, "Part ID: 0x%02X (expect 0x15)", part);
   }
@@ -165,7 +164,8 @@ void MAX30102CustomSensor::read_fifo_() {
   uint8_t wr = 0, rd = 0;
   if (!read_reg_(REG_FIFO_WR_PTR, &wr)) return;
   if (!read_reg_(REG_FIFO_RD_PTR, &rd)) return;
-  int16_t num = (wr - rd) & 0x1F; // 5-bit pointeri
+
+  int16_t num = (wr - rd) & 0x1F; // 5-bit pointeri, FIFO dubina 32
   if (num <= 0) return;
 
   const size_t BYTES_PER_SAMPLE = 6; // RED(3) + IR(3)
@@ -177,7 +177,6 @@ void MAX30102CustomSensor::read_fifo_() {
     uint32_t red = (((uint32_t)buf[0] << 16) | ((uint32_t)buf[1] << 8) | buf[2]) & 0x3FFFF;
     uint32_t ir  = (((uint32_t)buf[3] << 16) | ((uint32_t)buf[4] << 8) | buf[5]) & 0x3FFFF;
 
-    // RAW median (stable mode) prije spremanja u glavne buffere
     float red_f = update_median_(raw_red_win_, raw_red_idx_, raw_red_cnt_, (float) red);
     float ir_f  = update_median_(raw_ir_win_,  raw_ir_idx_,  raw_ir_cnt_,  (float) ir);
 
@@ -194,11 +193,9 @@ void MAX30102CustomSensor::process_samples_() {
   if (red_sensor_ && !red_buf_.empty())
     red_sensor_->publish_state(red_buf_.back());
 
-  // Jednostavna detekcija prsta na temelju DC IR (s histerezom)
+  // Jednostavna detekcija prsta na temelju IR DC + histereze
   if (!ir_buf_.empty()) {
-    // EWMA za DC korišten i u compute_hr_spo2_, ovdje gruba detekcija:
     float sample = ir_buf_.back();
-    // Za detekciju koristimo usporedbu s pragom (finger_thr_) i histerezom
     bool next = finger_present_;
     if (!finger_present_) {
       if (sample > finger_thr_) next = true;
@@ -236,7 +233,6 @@ void MAX30102CustomSensor::compute_hr_spo2_() {
       if (fabsf(ac_f) > thr) {
         if (last_peak_ms_ != 0) {
           uint32_t dt = now - last_peak_ms_;
-          // Granice: min/max BPM iz YAML-a
           float min_ms = 60000.0f / std::max(1, max_bpm_);
           float max_ms = 60000.0f / std::max(1, min_bpm_);
           if (dt >= (uint32_t)min_ms && dt <= (uint32_t)max_ms && hr_sensor_) {
@@ -274,7 +270,6 @@ void MAX30102CustomSensor::compute_hr_spo2_() {
 
       if (mean_ir > 1.0f && mean_red > 1.0f && rms_ir > 0.1f) {
         float R = (rms_red / mean_red) / (rms_ir / mean_ir);
-        // Blaga korekcija (ostavljamo linearnu aproks. za stabilnost)
         float spo2_raw = 110.0f - 25.0f * R;
         if (spo2_raw < 0) spo2_raw = 0; if (spo2_raw > 100) spo2_raw = 100;
 
@@ -293,4 +288,4 @@ void MAX30102CustomSensor::update() {
 }
 
 }  // namespace max30102_custom
-}  // namespace esphome// placeholder cpp
+}  // namespace esphome
