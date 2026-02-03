@@ -47,8 +47,8 @@ CONFIG_SCHEMA = (
 
 
 async def to_code(config):
-    var = cg.new_Pvariable(config[core.CONF_ID])
-    await sensor.register_sensor(var, config)
+var = cg.new_Pvariable(config["id"])
+await sensor.register_sensor(var, config)
 
     # osnovni parametri
     cg.add(var.set_address(config["address"]))
