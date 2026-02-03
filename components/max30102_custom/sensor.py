@@ -45,10 +45,9 @@ CONFIG_SCHEMA = (
     .extend(cv.polling_component_schema("20ms"))
 )
 
-
 async def to_code(config):
-var = cg.new_Pvariable(config["id"])
-await sensor.register_sensor(var, config)
+    var = cg.new_Pvariable(config["id"])
+    await sensor.register_sensor(var, config)
 
     # osnovni parametri
     cg.add(var.set_address(config["address"]))
