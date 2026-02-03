@@ -49,9 +49,20 @@ float MAX30102CustomSensor::iir_spo2_(float x) {
 }
 
 // ---------------- I2C helperi ----------------
-bool MAX30102CustomSensor::write_reg_(uint8_t reg, uint8_t val) { return this->write(reg, &val, 1); }
-bool MAX30102CustomSensor::read_reg_(uint8_t reg, uint8_t *val) { return this->read(reg, val, 1); }
-bool MAX30102CustomSensor::burst_read_(uint8_t reg, uint8_t *data, size_t len) { return this->read(reg, data, len); }
+
+bool MAX30102CustomSensor::write_reg_(uint8_t reg, uint8_t val) {
+  uint8_t data[2] = { reg, val };
+  auto err = this->write(data, 2);   // novi API
+  return err == i2c::ERROR_OK;
+}
+bool MAX30102CustomSensor::read_reg_(uint8_t reg, uint8_t *val) {
+  auto err = this->write_read(&reg, 1, val, 1);  // novi API
+  return err == i2c::ERROR_OK;
+}
+bool MAX30102CustomSensor::burst_read_(uint8_t reg, uint8_t *data, size_t len) {
+  auto err = this->write_read(&reg, 1, data, len);  // novi API
+  return err == i2c::ERROR_OK;
+}
 
 // ---------------- Konfiguracija MAX30102 ----------------
 static inline uint8_t map_sample_rate_code(uint16_t hz) {
