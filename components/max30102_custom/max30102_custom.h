@@ -177,6 +177,12 @@ class MAX30102CustomSensor : public sensor::Sensor,
   float ac_iir_state_{0.0f};
   float hr_iir_state_{0.0f};
   float spo2_iir_state_{0.0f};
+  
+  // IIR smoothing coefficients
+  float ac_iir_a_{0.90f};
+  float hr_iir_a_{0.85f};
+  float spo2_iir_a_{0.85f};
+
 
   float dc_ir_{0.0f};
   float last_ir_{0.0f};
