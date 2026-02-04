@@ -40,7 +40,7 @@ static const uint8_t REG_PART_ID        = 0xFF;  // expect 0x15
 enum class DriverState {
   STANDBY = 0,      // minimal power LED, FIFO not processed
   TOUCHING,         // finger detected, timing starts
-  LONG_TOUCH,       // long-touch triggered, measurement active
+  LONG_TOUCH,       // (not used as state; we directly transition to MEASURING)
   MEASURING         // measurement fully active
 };
 
@@ -88,7 +88,6 @@ class MAX30102CustomSensor : public sensor::Sensor,
   void set_active_led_ir(float v) { led_ir_ma_active_   = v; }
   void set_active_led_red(float v){ led_red_ma_active_  = v; }
 
-  // Runtime finger threshold
   void set_finger_threshold_runtime(float v) { finger_thr_ = v; }
 
   // Manual LED override (kill switch)
