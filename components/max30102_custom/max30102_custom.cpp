@@ -79,7 +79,7 @@ void MAX30102CustomSensor::apply_led_current_(float red_ma, float ir_ma) {
 //  Read single IR sample for touch detection (fast path)
 // ================================================================
 float MAX30102CustomSensor::read_single_ir_sample_() {
-  // 🔥 VAŽNO: resetiraj FIFO pointere da dobiješ SVJEŽI ADC sample
+  // Reset FIFO pointere da dobijemo svježi ADC sample
   write_reg_(REG_FIFO_RD_PTR, 0x00);
   write_reg_(REG_FIFO_WR_PTR, 0x00);
   write_reg_(REG_OVF_COUNTER, 0x00);
@@ -87,15 +87,15 @@ float MAX30102CustomSensor::read_single_ir_sample_() {
   // Pročitaj jedan sample (RED + IR)
   uint8_t buf[6];
   if (!burst_read_(REG_FIFO_DATA, buf, 6))
-    return 0;
+    return 0.0f;
 
-  // Ekstrahiraj IR dio iz 18-bit MSB segmenta
+  // IR komponenta iz 18-bit podataka
   uint32_t ir =
     (((uint32_t)buf[3] << 16) |
      ((uint32_t)buf[4] << 8)  |
       (uint32_t)buf[5]) & 0x3FFFF;
 
-  return (float) ir;
+  return static_cast<float>(ir);
 }
 
 // ================================================================
@@ -104,15 +104,13 @@ float MAX30102CustomSensor::read_single_ir_sample_() {
 void MAX30102CustomSensor::update_touch_state_() {
   // --- Manual LED OFF override (kill switch) ---
   if (led_override_) {
-    // Ugasi LED-e potpuno i zaustavi touch detekciju
     apply_led_current_(0.0f, 0.0f);
     finger_present_ = false;
     if (finger_sensor_) finger_sensor_->publish_state(false);
     state_ = DriverState::STANDBY;
-    return; 
+    return;
   }
 
-{
   float ir = read_single_ir_sample_();
   uint32_t now = millis();
 
@@ -140,11 +138,12 @@ void MAX30102CustomSensor::update_touch_state_() {
 
     case DriverState::TOUCHING:
       if (!detected) {
-        // Short-touch
-        if (short_touch_sensor_){
+        // Short-touch pulse event
+        if (short_touch_sensor_) {
           short_touch_sensor_->publish_state(true);
           short_touch_sensor_->publish_state(false);
         }
+
         // Reset LED to idle
         apply_led_current_(led_red_ma_idle_, led_ir_ma_idle_);
         state_ = DriverState::STANDBY;
@@ -153,14 +152,17 @@ void MAX30102CustomSensor::update_touch_state_() {
       }
 
       if ((now - touch_start_ms_) >= long_touch_ms_) {
-        // LONG TOUCH TRIGGER
-        if (long_touch_sensor_)
+        // LONG TOUCH TRIGGER (pulse event ako želiš)
+        if (long_touch_sensor_) {
           long_touch_sensor_->publish_state(true);
+          long_touch_sensor_->publish_state(false);
+        }
 
         // Go active
         apply_led_current_(led_red_ma_active_, led_ir_ma_active_);
         state_ = DriverState::MEASURING;
-        // Reset FIFO for measuring
+
+        // Reset FIFO for clean measuring
         write_reg_(REG_FIFO_RD_PTR, 0x00);
         write_reg_(REG_FIFO_WR_PTR, 0x00);
         write_reg_(REG_OVF_COUNTER, 0x00);
@@ -237,7 +239,7 @@ void MAX30102CustomSensor::configure_sensor_() {
 
   write_reg_(REG_SPO2_CONFIG, spo2);
 
-  // Start in SpO2 mode
+  // SpO2 mode (RED+IR)
   write_reg_(REG_MODE_CONFIG, 0x03);
 
   // Interrupts
@@ -248,6 +250,7 @@ void MAX30102CustomSensor::configure_sensor_() {
     "Configured: rate=%u Hz, avg=%u, pw=%u us, range=%u nA",
     sample_rate_hz_, sample_average_, pulse_width_us_, adc_range_na_);
 }
+
 // ================================================================
 //  FIFO READ ENGINE
 // ================================================================
@@ -416,23 +419,20 @@ void MAX30102CustomSensor::compute_hr_spo2_() {
     }
   }
 }
+
 // ================================================================
 //  UPDATE LOOP
 // ================================================================
 void MAX30102CustomSensor::update() {
 
-  // ------------------------------------------------------------
   // 1) Touch detection & LED mode FSM
-  // ------------------------------------------------------------
   update_touch_state_();
 
   // If not measuring, do NOT read FIFO or run HR/SpO2 DSP
   if (state_ != DriverState::MEASURING)
     return;
 
-  // ------------------------------------------------------------
   // 2) Active measurement pipeline
-  // ------------------------------------------------------------
   read_fifo_();
   process_samples_();
   compute_hr_spo2_();
