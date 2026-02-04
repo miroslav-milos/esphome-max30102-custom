@@ -123,9 +123,10 @@ void MAX30102CustomSensor::update_touch_state_() {
     case DriverState::TOUCHING:
       if (!detected) {
         // Short-touch
-        if (short_touch_sensor_)
+        if (short_touch_sensor_){
           short_touch_sensor_->publish_state(true);
-
+          short_touch_sensor_->publish_state(false);
+        }
         // Reset LED to idle
         apply_led_current_(led_red_ma_idle_, led_ir_ma_idle_);
         state_ = DriverState::STANDBY;
