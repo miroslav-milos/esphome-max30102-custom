@@ -102,6 +102,17 @@ float MAX30102CustomSensor::read_single_ir_sample_() {
 //  TOUCH STATE MACHINE
 // ================================================================
 void MAX30102CustomSensor::update_touch_state_() {
+  // --- Manual LED OFF override (kill switch) ---
+  if (led_override_) {
+    // Ugasi LED-e potpuno i zaustavi touch detekciju
+    apply_led_current_(0.0f, 0.0f);
+    finger_present_ = false;
+    if (finger_sensor_) finger_sensor_->publish_state(false);
+    state_ = DriverState::STANDBY;
+    return; 
+  }
+
+{
   float ir = read_single_ir_sample_();
   uint32_t now = millis();
 
