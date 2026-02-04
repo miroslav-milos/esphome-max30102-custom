@@ -79,6 +79,21 @@ class MAX30102CustomSensor : public sensor::Sensor,
   void set_finger_hysteresis(float v)   { finger_hyst_ = v; }
   void set_touch_long_ms(uint32_t v)    { long_touch_ms_ = v; }
 
+  // ---- Runtime adjustments (API) ----
+  // Podesivo preko ESPHome API-ja (slidere/switch)
+  void set_idle_led_ir(float v)   { led_ir_ma_idle_     = v; }
+  void set_idle_led_red(float v)  { led_red_ma_idle_    = v; }
+  void set_touch_led_ir(float v)  { led_ir_ma_touch_    = v; }
+  void set_touch_led_red(float v) { led_red_ma_touch_   = v; }
+  void set_active_led_ir(float v) { led_ir_ma_active_   = v; }
+  void set_active_led_red(float v){ led_red_ma_active_  = v; }
+  
+  // Runtime finger threshold
+  void set_finger_threshold_runtime(float v) { finger_thr_ = v; }
+  
+  // Manual LED override (kill switch)
+  void set_led_override(bool v) { led_override_ = v; }
+  bool get_led_override() const { return led_override_; }
   // -------------------------------------------------------------
   // YAML SETTERS — SUB‑SENSORS
   // -------------------------------------------------------------
@@ -170,7 +185,8 @@ class MAX30102CustomSensor : public sensor::Sensor,
 
   float led_red_ma_active_{7.6f};
   float led_ir_ma_active_{12.6f};
-
+  //overide off led
+  bool led_override_{false};
   // =============================================================
   //  HARD FILTER STATES
   // =============================================================
