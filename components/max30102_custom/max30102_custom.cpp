@@ -79,16 +79,23 @@ void MAX30102CustomSensor::apply_led_current_(float red_ma, float ir_ma) {
 //  Read single IR sample for touch detection (fast path)
 // ================================================================
 float MAX30102CustomSensor::read_single_ir_sample_() {
+  // 🔥 VAŽNO: resetiraj FIFO pointere da dobiješ SVJEŽI ADC sample
+  write_reg_(REG_FIFO_RD_PTR, 0x00);
+  write_reg_(REG_FIFO_WR_PTR, 0x00);
+  write_reg_(REG_OVF_COUNTER, 0x00);
+
+  // Pročitaj jedan sample (RED + IR)
   uint8_t buf[6];
   if (!burst_read_(REG_FIFO_DATA, buf, 6))
     return 0;
 
+  // Ekstrahiraj IR dio iz 18-bit MSB segmenta
   uint32_t ir =
     (((uint32_t)buf[3] << 16) |
      ((uint32_t)buf[4] << 8)  |
       (uint32_t)buf[5]) & 0x3FFFF;
 
-  return static_cast<float>(ir);
+  return (float) ir;
 }
 
 // ================================================================
@@ -142,6 +149,10 @@ void MAX30102CustomSensor::update_touch_state_() {
         // Go active
         apply_led_current_(led_red_ma_active_, led_ir_ma_active_);
         state_ = DriverState::MEASURING;
+        // Reset FIFO for measuring
+        write_reg_(REG_FIFO_RD_PTR, 0x00);
+        write_reg_(REG_FIFO_WR_PTR, 0x00);
+        write_reg_(REG_OVF_COUNTER, 0x00);
 
         ESP_LOGI(TAG, "Long touch! → MEASURING mode");
       }
