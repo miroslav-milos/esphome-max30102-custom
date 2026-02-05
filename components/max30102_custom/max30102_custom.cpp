@@ -76,33 +76,40 @@ void MAX30102CustomSensor::apply_led_current_(float red_ma, float ir_ma) {
 }
 
 // ================================================================
-//  Read single IR sample for touch detection (fast path)
+//  Read single IR sample for touch detection (NO FIFO RESET)
 // ================================================================
 float MAX30102CustomSensor::read_single_ir_sample_() {
-  // Reset FIFO pointere da dobijemo svježi ADC sample
-  write_reg_(REG_FIFO_RD_PTR, 0x00);
-  write_reg_(REG_FIFO_WR_PTR, 0x00);
-  write_reg_(REG_OVF_COUNTER, 0x00);
+  uint8_t wr_ptr = 0, rd_ptr = 0;
+  if (!read_reg_(REG_FIFO_WR_PTR, &wr_ptr)) return touch_ir_ewma_;
+  if (!read_reg_(REG_FIFO_RD_PTR, &rd_ptr)) return touch_ir_ewma_;
 
-  // Pročitaj jedan sample (RED + IR)
+  uint8_t n = (wr_ptr - rd_ptr) & 0x1F;
+  if (n == 0) {
+    // nema novog uzorka → vrati posljednji filtrirani
+    return touch_ir_ewma_;
+  }
+
   uint8_t buf[6];
   if (!burst_read_(REG_FIFO_DATA, buf, 6))
-    return 0.0f;
+    return touch_ir_ewma_;
 
   // IR komponenta iz 18-bit podataka
   uint32_t ir =
-    (((uint32_t)buf[3] << 16) |
-     ((uint32_t)buf[4] << 8)  |
-      (uint32_t)buf[5]) & 0x3FFFF;
+    ((((uint32_t)buf[3] << 16) |
+      ((uint32_t)buf[4] << 8)  |
+       (uint32_t)buf[5]) & 0x3FFFF);
 
-  return static_cast<float>(ir);
+  // lagani EWMA da “touch” ne flipa
+  const float a = 0.2f;
+  touch_ir_ewma_ = (1.0f - a) * touch_ir_ewma_ + a * static_cast<float>(ir);
+  return touch_ir_ewma_;
 }
 
 // ================================================================
-//  TOUCH STATE MACHINE
+//  TOUCH STATE MACHINE (debounce + bez resetiranja FIFO-a)
 // ================================================================
 void MAX30102CustomSensor::update_touch_state_() {
-  // --- Manual LED OFF override (kill switch) ---
+  // Manual LED OFF override
   if (led_override_) {
     apply_led_current_(0.0f, 0.0f);
     finger_present_ = false;
@@ -111,48 +118,60 @@ void MAX30102CustomSensor::update_touch_state_() {
     return;
   }
 
-  float ir = read_single_ir_sample_();
   uint32_t now = millis();
 
-  bool detected = ir > finger_thr_;
+  // U MEASURING ne smijemo konzumirati FIFO → koristimo EWMA sirovog IR-a
+  float ir_level = 0.0f;
+  if (state_ == DriverState::MEASURING) {
+    ir_level = touch_ir_ewma_; // osvježava se u read_fifo_()
+  } else {
+    ir_level = read_single_ir_sample_(); // može uzeti 1 sample iz FIFO-a
+  }
 
-  // Publish finger presence with hysteresis
-  if (!finger_present_ && detected)
-    finger_present_ = true;
-  else if (finger_present_ && ir < finger_thr_ * finger_hyst_)
-    finger_present_ = false;
-
-  if (finger_sensor_)
-    finger_sensor_->publish_state(finger_present_);
+  bool above = ir_level > finger_thr_;
+  bool below = ir_level < finger_thr_ * finger_hyst_;
 
   switch (state_) {
-
     case DriverState::STANDBY:
-      if (detected) {
-        state_ = DriverState::TOUCHING;
-        touch_start_ms_ = now;
-        apply_led_current_(led_red_ma_touch_, led_ir_ma_touch_);
-        ESP_LOGI(TAG, "Touch detected → TOUCHING mode");
+      if (above) {
+        if (touch_detect_ms_ == 0) touch_detect_ms_ = now;
+        if (now - touch_detect_ms_ >= touch_detect_debounce_ms_) {
+          finger_present_ = true;
+          if (finger_sensor_) finger_sensor_->publish_state(true);
+          state_ = DriverState::TOUCHING;
+          touch_start_ms_ = now;
+          apply_led_current_(led_red_ma_touch_, led_ir_ma_touch_);
+          ESP_LOGI(TAG, "Touch detected → TOUCHING mode");
+          touch_detect_ms_ = 0;
+        }
+      } else {
+        touch_detect_ms_ = 0;
       }
       break;
 
     case DriverState::TOUCHING:
-      if (!detected) {
-        // Short-touch pulse event
-        if (short_touch_sensor_) {
-          short_touch_sensor_->publish_state(true);
-          short_touch_sensor_->publish_state(false);
+      if (below) {
+        if (touch_release_ms_ == 0) touch_release_ms_ = now;
+        if (now - touch_release_ms_ >= touch_release_debounce_ms_) {
+          // Short-touch pulse event
+          if (short_touch_sensor_) {
+            short_touch_sensor_->publish_state(true);
+            short_touch_sensor_->publish_state(false);
+          }
+          // Reset LED to idle
+          apply_led_current_(led_red_ma_idle_, led_ir_ma_idle_);
+          finger_present_ = false;
+          if (finger_sensor_) finger_sensor_->publish_state(false);
+          state_ = DriverState::STANDBY;
+          ESP_LOGI(TAG, "Touch released → short-touch");
+          touch_release_ms_ = 0;
         }
-
-        // Reset LED to idle
-        apply_led_current_(led_red_ma_idle_, led_ir_ma_idle_);
-        state_ = DriverState::STANDBY;
-        ESP_LOGI(TAG, "Touch released → short-touch");
-        break;
+      } else {
+        touch_release_ms_ = 0;
       }
 
       if ((now - touch_start_ms_) >= long_touch_ms_) {
-        // LONG TOUCH TRIGGER (pulse event ako želiš)
+        // LONG TOUCH TRIGGER
         if (long_touch_sensor_) {
           long_touch_sensor_->publish_state(true);
           long_touch_sensor_->publish_state(false);
@@ -162,7 +181,7 @@ void MAX30102CustomSensor::update_touch_state_() {
         apply_led_current_(led_red_ma_active_, led_ir_ma_active_);
         state_ = DriverState::MEASURING;
 
-        // Reset FIFO for clean measuring
+        // Reset FIFO for clean measuring (ovdje je ispravno)
         write_reg_(REG_FIFO_RD_PTR, 0x00);
         write_reg_(REG_FIFO_WR_PTR, 0x00);
         write_reg_(REG_OVF_COUNTER, 0x00);
@@ -172,10 +191,18 @@ void MAX30102CustomSensor::update_touch_state_() {
       break;
 
     case DriverState::MEASURING:
-      if (!detected) {
-        state_ = DriverState::STANDBY;
-        apply_led_current_(led_red_ma_idle_, led_ir_ma_idle_);
-        ESP_LOGI(TAG, "Finger removed → STANDBY");
+      if (below) {
+        if (touch_release_ms_ == 0) touch_release_ms_ = now;
+        if (now - touch_release_ms_ >= touch_release_debounce_ms_) {
+          state_ = DriverState::STANDBY;
+          apply_led_current_(led_red_ma_idle_, led_ir_ma_idle_);
+          finger_present_ = false;
+          if (finger_sensor_) finger_sensor_->publish_state(false);
+          ESP_LOGI(TAG, "Finger removed → STANDBY");
+          touch_release_ms_ = 0;
+        }
+      } else {
+        touch_release_ms_ = 0;
       }
       break;
 
@@ -272,14 +299,21 @@ void MAX30102CustomSensor::read_fifo_() {
       return;
 
     uint32_t red_raw =
-      ((((uint32_t)buf[0]) << 16) |
-       (((uint32_t)buf[1]) << 8)  |
-        ((uint32_t)buf[2])) & 0x3FFFF;
+      ((((uint32_t)buf[0] << 16) |
+        ((uint32_t)buf[1] << 8)  |
+         (uint32_t)buf[2]) & 0x3FFFF);
 
     uint32_t ir_raw =
-      ((((uint32_t)buf[3]) << 16) |
-       (((uint32_t)buf[4]) << 8)  |
-        ((uint32_t)buf[5])) & 0x3FFFF;
+      ((((uint32_t)buf[3] << 16) |
+        ((uint32_t)buf[4] << 8)  |
+         (uint32_t)buf[5]) & 0x3FFFF);
+
+    // update last raw for touch EWMA during measuring (ne jede FIFO posebno)
+    last_raw_ir_ = static_cast<float>(ir_raw);
+    if (state_ == DriverState::MEASURING) {
+      const float a = 0.05f; // sporije, samo za touch heuristiku
+      touch_ir_ewma_ = (1.0f - a) * touch_ir_ewma_ + a * last_raw_ir_;
+    }
 
     // Median pipelines
     float red_f = update_median_(raw_red_win_, raw_red_idx_, raw_red_cnt_, (float)red_raw);
@@ -306,61 +340,58 @@ void MAX30102CustomSensor::process_samples_() {
 }
 
 // ================================================================
-//  HEART RATE & AC FILTER PIPELINE
+//  HEART RATE & AC FILTER PIPELINE (per-sample)
 // ================================================================
 void MAX30102CustomSensor::compute_hr_spo2_() {
   if (ir_buf_.empty())
     return;
 
-  // ------------------------------------------------------------
-  // 1) DC removal via slow EWMA baseline
-  // ------------------------------------------------------------
-  float x = ir_buf_.back();
+  // Obradi SVE nove uzorke od last_processed_idx_ do zadnjeg
+  size_t start_idx = last_processed_idx_;
+  if (start_idx > ir_buf_.size()) start_idx = 0;
 
-  float a = baseline_alpha_;
-  if (a < 0.001f) a = 0.001f;
-  if (a > 0.50f)  a = 0.50f;
+  for (size_t i = start_idx; i < ir_buf_.size(); i++) {
+    float x = ir_buf_[i];  // zadnji filtrirani IR sample (median5)
 
-  // DC estimate
-  dc_ir_ = (1.0f - a) * dc_ir_ + a * x;
-  float ac_raw = x - dc_ir_;
+    // 1) DC removal via slow EWMA baseline
+    float a = baseline_alpha_;
+    if (a < 0.001f) a = 0.001f;
+    if (a > 0.50f)  a = 0.50f;
 
-  // AC IIR smoothing
-  float ac_f = iir_ac_(ac_raw);
+    dc_ir_ = (1.0f - a) * dc_ir_ + a * x;
+    float ac_raw = x - dc_ir_;
 
-  // Update AC window for RMS
-  ac_win_.push_back(ac_f);
-  if (ac_win_.size() > ac_win_cap_)
-    ac_win_.pop_front();
+    // AC IIR smoothing
+    float ac_f = iir_ac_(ac_raw);
 
-  // ------------------------------------------------------------
-  // 2) Compute RMS amplitude for adaptive threshold
-  // ------------------------------------------------------------
-  float rms = 0.0f;
-  if (!ac_win_.empty()) {
-    for (float v : ac_win_) rms += v * v;
-    rms = sqrtf(rms / ac_win_.size());
-  }
+    // 2) RMS amplitude for adaptive threshold
+    ac_win_.push_back(ac_f);
+    if (ac_win_.size() > ac_win_cap_)
+      ac_win_.pop_front();
 
-  float thr = std::max(ac_min_amp_, rms * ac_rms_k_);
+    float rms = 0.0f;
+    if (!ac_win_.empty()) {
+      for (float v : ac_win_) rms += v * v;
+      rms = sqrtf(rms / ac_win_.size());
+    }
 
-  // ------------------------------------------------------------
-  // 3) Peak detection using rising edge + debounce
-  // ------------------------------------------------------------
-  bool rising = ac_f > last_ir_;
-  uint32_t now = millis();
+    float thr = std::max(ac_min_amp_, rms * ac_rms_k_);
 
-  if (!prev_rising_ && rising && last_ir_ > 0) {
-    if (fabsf(ac_f) > thr) {
-      // Valid peak?
-      if (last_peak_ms_ != 0) {
-        uint32_t dt = now - last_peak_ms_;
+    // 3) Peak detection using rising edge + sample-based timing
+    bool rising = ac_f > last_ir_;
 
-        float min_ms = 60000.0f / std::max(1, max_bpm_);
-        float max_ms = 60000.0f / std::max(1, min_bpm_);
+    // Samples per beat bounds
+    float min_ds_f = (60.0f * (float)sample_rate_hz_) / std::max(1, max_bpm_);
+    float max_ds_f = (60.0f * (float)sample_rate_hz_) / std::max(1, min_bpm_);
+    uint32_t min_ds = (uint32_t) std::floor(min_ds_f);
+    uint32_t max_ds = (uint32_t) std::ceil (max_ds_f);
+    if (min_ds < 1) min_ds = 1;
 
-        if (dt >= min_ms && dt <= max_ms) {
-          float bpm_raw = 60000.0f / (float)dt;
+    if (!prev_rising_ && rising && std::fabs(ac_f) > thr) {
+      if (last_peak_sample_ != 0) {
+        uint32_t ds = sample_counter_ - last_peak_sample_;
+        if (ds >= min_ds && ds <= max_ds) {
+          float bpm_raw = (60.0f * (float)sample_rate_hz_) / (float)ds;
           float bpm_filt = iir_hr_(bpm_raw);
 
           if (hr_sensor_)
@@ -370,16 +401,19 @@ void MAX30102CustomSensor::compute_hr_spo2_() {
           this->publish_state(bpm_filt);
         }
       }
-      last_peak_ms_ = now;
+      last_peak_sample_ = sample_counter_;
     }
+
+    prev_rising_ = rising;
+    last_ir_ = ac_f;
+
+    // sample clock +
+    sample_counter_++;
   }
 
-  prev_rising_ = rising;
-  last_ir_ = ac_f;
+  last_processed_idx_ = ir_buf_.size();
 
-  // ------------------------------------------------------------
-  // 4) SpO₂ pipeline (ratio of ratios)
-  // ------------------------------------------------------------
+  // 4) SpO₂ pipeline (ratio of ratios) – kao prije, 50–200 uzoraka
   if (spo2_sensor_ && !red_buf_.empty()) {
     size_t N = std::min((size_t)200, std::min(ir_buf_.size(), red_buf_.size()));
     if (N >= 50) {
@@ -425,7 +459,7 @@ void MAX30102CustomSensor::compute_hr_spo2_() {
 // ================================================================
 void MAX30102CustomSensor::update() {
 
-  // 1) Touch detection & LED mode FSM
+  // 1) Touch detection & LED mode FSM (NE dira FIFO u MEASURING)
   update_touch_state_();
 
   // If not measuring, do NOT read FIFO or run HR/SpO2 DSP
