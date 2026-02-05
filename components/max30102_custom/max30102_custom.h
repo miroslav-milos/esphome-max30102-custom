@@ -70,7 +70,7 @@ class MAX30102CustomSensor : public sensor::Sensor,
   void set_adc_range(uint16_t v)     { adc_range_na_    = v; }
 
   void set_baseline_alpha(float v) { baseline_alpha_ = v; }
-  void set_rms_beta(float v)       { rms_beta_      = v; }
+  void set_rms_beta(float v)       { rms_beta_      = v; }  // (nije korišten u ovom patchu, ostavljen za kompat.)
 
   void set_min_bpm(int v) { min_bpm_ = v; }
   void set_max_bpm(int v) { max_bpm_ = v; }
@@ -80,7 +80,6 @@ class MAX30102CustomSensor : public sensor::Sensor,
   void set_touch_long_ms(uint32_t v)    { long_touch_ms_ = v; }
 
   // ---- Runtime adjustments (API) ----
-  // Podesivo preko ESPHome API-ja (slidere/switch)
   void set_idle_led_ir(float v)   { led_ir_ma_idle_     = v; }
   void set_idle_led_red(float v)  { led_red_ma_idle_    = v; }
   void set_touch_led_ir(float v)  { led_ir_ma_touch_    = v; }
@@ -138,7 +137,7 @@ class MAX30102CustomSensor : public sensor::Sensor,
   //  TOUCH STATE MACHINE
   // =============================================================
   void update_touch_state_();
-  float read_single_ir_sample_();  // low-overhead IR sample for touch detection
+  float read_single_ir_sample_();  // low-overhead IR sample for touch detection (bez reset FIFO-a)
 
   // =============================================================
   //  FILTERING / DSP
@@ -203,7 +202,7 @@ class MAX30102CustomSensor : public sensor::Sensor,
 
   float dc_ir_{0.0f};
   float last_ir_{0.0f};
-  uint32_t last_peak_ms_{0};
+  uint32_t last_peak_ms_{0};   // (zadržano radi kompat., nije više korišteno za HR timing)
   bool prev_rising_{false};
 
   // =============================================================
@@ -214,10 +213,11 @@ class MAX30102CustomSensor : public sensor::Sensor,
   std::vector<float> red_buf_;
 
   std::deque<float> ac_win_;
-  size_t ac_win_cap_{50};
+  size_t ac_win_cap_{100};  // 1 s @ 100 Hz → stabilniji prag
 
-  float ac_min_amp_{300.0f};
-  float ac_rms_k_{0.80f};
+  // ✅ realniji defaulti za HR detekciju
+  float ac_min_amp_{20.0f};
+  float ac_rms_k_{1.5f};
 
   // median windows
   std::array<float, 5> raw_ir_win_ {{0}};
@@ -243,6 +243,23 @@ class MAX30102CustomSensor : public sensor::Sensor,
   binary_sensor::BinarySensor *finger_sensor_{nullptr};
   binary_sensor::BinarySensor *short_touch_sensor_{nullptr};
   binary_sensor::BinarySensor *long_touch_sensor_{nullptr};
+
+  // =============================================================
+  //  NEW: PER-SAMPLE & TOUCH SUPPORT
+  // =============================================================
+  size_t   last_processed_idx_{0};  // do kojeg indeksa je HR pipeline obradio uzorke
+  uint32_t sample_counter_{0};      // globalni brojač uzoraka (za BPM iz uzoraka)
+  uint32_t last_peak_sample_{0};    // uzorak gdje je zadnji vrh detektiran
+
+  // Touch smoothing & debounce
+  float    touch_ir_ewma_{0.0f};
+  uint32_t touch_detect_ms_{0};
+  uint32_t touch_release_ms_{0};
+  uint32_t touch_detect_debounce_ms_{80};
+  uint32_t touch_release_debounce_ms_{150};
+
+  // Zadnji sirovi IR (za touch u MEASURING bez čitanja FIFO-a)
+  float last_raw_ir_{0.0f};
 };
 
 }  // namespace max30102_custom
